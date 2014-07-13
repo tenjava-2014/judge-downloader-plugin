@@ -1,4 +1,4 @@
-name: Downloader
+name: TenJava Judge
 author: TenJava
 version: 1.0
 main: com.tenjava.downloader.Downloader
