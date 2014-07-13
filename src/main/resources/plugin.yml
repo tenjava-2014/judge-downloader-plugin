@@ -1,0 +1,5 @@
+name: Downloader
+author: TenJava
+version: 1.0
+main: com.tenjava.downloader.Downloader
+depend: [WorldEdit]
