@@ -2,127 +2,183 @@ package com.tenjava.downloader;
 
 
 import com.offbytwo.jenkins.JenkinsServer;
+import com.offbytwo.jenkins.model.Build;
 import com.offbytwo.jenkins.model.Job;
-import com.sk89q.bukkit.util.CommandsManagerRegistration;
-import com.sk89q.minecraft.util.commands.CommandException;
-import com.sk89q.minecraft.util.commands.CommandPermissionsException;
-import com.sk89q.minecraft.util.commands.CommandUsageException;
-import com.sk89q.minecraft.util.commands.CommandsManager;
-import com.sk89q.minecraft.util.commands.MissingNestedCommandException;
-import com.sk89q.minecraft.util.commands.WrappedCommandException;
-import com.tenjava.downloader.commands.DownloadCommand;
-import org.apache.commons.io.FileUtils;
-import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
-import org.bukkit.command.ConsoleCommandSender;
-import org.bukkit.entity.Player;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
-import java.util.Map;
+import java.net.URLConnection;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.util.Enumeration;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+import java.util.zip.ZipOutputStream;
 
 /**
  * @author MasterEjay
  */
 public class Downloader extends JavaPlugin {
 
-	public CommandsManager<CommandSender> commands;
-	public static JenkinsServer jenkinsServer;
+    private JenkinsServer jenkins;
 
-	@Override
-	public void onEnable(){
-		super.onEnable();
-		setupCommands();
-		try{
-			jenkinsServer = new JenkinsServer(new URI("http://ci.tenjava.com/"));
-		}catch(URISyntaxException e){
-			Bukkit.getLogger().severe(e.getMessage());
-			Bukkit.shutdown();
-		}
-	}
+    @Override
+    public void onEnable() {
+        try {
+            jenkins = new JenkinsServer(new URI("http://ci.tenjava.com"));
+        } catch (URISyntaxException e) {
+            e.printStackTrace(); // Someone should see this...
+            getServer().getPluginManager().disablePlugin(this);
+        }
+    }
 
-	@Override
-	public void onDisable(){
-		super.onDisable();
-	}
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String alias, String[] args) {
+        String entry;
+        if (args.length < 1) {
+            return false;
+        } else {
+            entry = args[0];
+        }
 
-	public void setupCommands() {
-		commands = new CommandsManager<CommandSender>() {
-			@Override
-			public boolean hasPermission(CommandSender sender, String permission) {
-				return sender instanceof ConsoleCommandSender|| sender.hasPermission(permission);
-			}
-		};
+        // Permission checks are done by Bukkit
+        if (command.getName().equals("download")) {
+            sender.sendMessage(ChatColor.GRAY + "Downloading. Server may lag for a moment.");
+            attemptDownload(entry, sender);
+            return true;
+        }
 
-		CommandsManagerRegistration cmdRegister = new CommandsManagerRegistration(this, commands);
-		cmdRegister.register(DownloadCommand.class);
-	}
+        return false;
+    }
 
-	public boolean onCommand(CommandSender sender, Command cmd, String commandLabel, String[] args) {
-		try {
-			this.commands.execute(cmd.getName(), args, sender, sender);
-		} catch (CommandPermissionsException ex) {
-			sender.sendMessage(ChatColor.RED + "You don't have permission.");
-		} catch (MissingNestedCommandException ex) {
-			sender.sendMessage(ChatColor.RED + ex.getUsage());
-		} catch (CommandUsageException ex) {
-			sender.sendMessage(ChatColor.RED + ex.getMessage());
-			sender.sendMessage(ChatColor.RED + ex.getUsage());
-		} catch (WrappedCommandException ex) {
-			if (ex.getCause() instanceof NumberFormatException) {
-				sender.sendMessage(ChatColor.RED + "Number expected, string received instead.");
-			} else {
-				sender.sendMessage(ChatColor.RED + "An error has occurred running command " + ChatColor.DARK_RED + cmd.getName());
-				ex.printStackTrace();
-			}
-		} catch (CommandException ex) {
-			sender.sendMessage(ChatColor.RED + ex.getMessage());
-		}
+    private void attemptDownload(String entry, CommandSender sender) {
+        try {
+            // First get the job
+            Job job = jenkins.getJob(entry);
+            if (job == null) {
+                sender.sendMessage(ChatColor.RED + "Looks like that entry doesn't exist.");
+                return;
+            }
 
-		return true;
-	}
+            // Now check for the last successful build
+            Build build;
+            try {
+                build = job.details().getLastSuccessfulBuild();
+                if (build == null) {
+                    sender.sendMessage(ChatColor.RED + "That entry has never compiled (not downloaded).");
+                    return;
+                }
+            } catch (NullPointerException e) {
+                // The only job which causes this is lol768-t1 for whatever reason
+                sender.sendMessage(ChatColor.RED + "This entry is corrupted.");
+                return;
+            }
 
+            // Quick check to see if this plugin has failed it's last commit
+            Build lastBuild = job.details().getLastBuild();
+            if (lastBuild.getNumber() != build.getNumber()) {
+                sender.sendMessage(ChatColor.YELLOW + "Warning: The last successful build is NOT the latest!");
+            }
 
-	public static void download(String name, String time, CommandSender sender){
-		Map<String,Job> jobs;
-		Job selectedJob = null;
-		try{
-			jobs = jenkinsServer.getJobs();
-			String jobName = name + "-" + time;
-			sender.sendMessage(ChatColor.GOLD + "Finding build...");
-			for (Job job : jobs.values()){
-				if (jobName.equalsIgnoreCase(job.getName())){
-					selectedJob = job;
-				}
-			}
+            // Because people renamed their jars to funny names we need to parse the HTML for the
+            // real artifact ID then download that instead.
+            String html = getPageSource(build.getUrl());
+            Document document = Jsoup.parse(html);
 
-		}catch(IOException e){
-			Bukkit.getLogger().severe(e.getMessage());
-			Bukkit.shutdown();
-		}
+            // Find the artifact ID
+            String artifactString = "/";
+            for (Element element : document.getAllElements()) {
+                if (element.hasAttr("href") && element.attr("href").startsWith("artifact/target")) {
+                    artifactString += element.attr("href");
+                    break;
+                }
+            }
 
-		if (selectedJob == null){
-			sender.sendMessage(ChatColor.RED + "That job could not be found on the CI repo.");
-			return;
-		}
-		 sender.sendMessage(ChatColor.GOLD + "Build found");
-		 sender.sendMessage(ChatColor.GOLD + "Downloading....");
-		try{
-			File dir = new File(Downloader.class.getProtectionDomain().getCodeSource().getLocation().getPath().replaceAll("%20", " "));
-			File plugins = new File(dir.getParentFile().getPath());
-			String addon = "/artifact/target/" + name + "-" + time + ".jar";
-			FileUtils.copyURLToFile(new URL(selectedJob.details().getLastSuccessfulBuild().getUrl() + addon), new File(plugins, selectedJob.getName() + ".jar"));
-		}catch(IOException e){
-			Bukkit.getLogger().severe(e.getMessage());
-			Bukkit.shutdown();
-		}
-		sender.sendMessage(ChatColor.GREEN + "The file has been downloaded and placed in the update folder. Restart the server!");
+            if (artifactString.length() == 1) {
+                sender.sendMessage(ChatColor.RED + "Failed to locate artifact");
+                return;
+            }
 
-	}
+            File downloadFile = new File(getDataFolder().getParentFile(), "__temp.jar");
+            File pluginFile = new File(getDataFolder().getParentFile(), entry + ".jar");
+
+            if (downloadFile.exists()) downloadFile.delete();
+
+            // Now for the actual download (w00t. nio ftw)
+            URL website = new URL(build.getUrl() + artifactString);
+            ReadableByteChannel rbc = Channels.newChannel(website.openStream());
+            FileOutputStream fos = new FileOutputStream(downloadFile);
+            fos.getChannel().transferFrom(rbc, 0, Long.MAX_VALUE);
+            rbc.close();
+            fos.close();
+
+            // Now we need to fix the name so that we can disable it later if needed. This is done by
+            // unpacking the __temp.jar file into a stream and re-packing it as the entry.jar file. We
+            // do a search for the plugin.yml and then load it's contents into Bukkit to do some magic
+            // with it.
+            unzipAndFixPlugin(downloadFile, pluginFile, entry);
+            downloadFile.delete();
+
+            // Now tell them to start 'er up
+            sender.sendMessage(ChatColor.GREEN + entry + " has been downloaded to your server's plugin folder.");
+            sender.sendMessage(ChatColor.GRAY + "Type /reload to enable it. Don't forget about previous plugins!");
+        } catch (IOException e) {
+            e.printStackTrace();
+            sender.sendMessage(ChatColor.RED + "Something went wrong with the download. See the console for more information.");
+        }
+    }
+
+    private String getPageSource(String url) throws IOException {
+        URLConnection connection = new URL(url).openConnection();
+        BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream(), "UTF-8"));
+
+        String inputLine;
+        StringBuilder a = new StringBuilder();
+
+        while ((inputLine = in.readLine()) != null)
+            a.append(inputLine);
+        in.close();
+
+        return a.toString();
+    }
+
+    private void unzipAndFixPlugin(File source, File destination, String name) throws IOException {
+        ZipFile zipFile = new ZipFile(source);
+        final ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(destination));
+        for (Enumeration e = zipFile.entries(); e.hasMoreElements(); ) {
+            ZipEntry entryIn = (ZipEntry) e.nextElement();
+            if (!entryIn.getName().equalsIgnoreCase("plugin.yml")) {
+                zos.putNextEntry(entryIn);
+                InputStream is = zipFile.getInputStream(entryIn);
+                byte[] buf = new byte[1024];
+                int len;
+                while ((len = (is.read(buf))) > 0) {
+                    zos.write(buf, 0, len);
+                }
+            } else {
+                zos.putNextEntry(new ZipEntry("plugin.yml"));
+
+                InputStream is = zipFile.getInputStream(entryIn);
+                YamlConfiguration config = YamlConfiguration.loadConfiguration(is);
+                config.set("name", name);
+                String newYaml = config.saveToString();
+                byte[] asBytes = newYaml.getBytes();
+
+                zos.write(asBytes);
+            }
+            zos.closeEntry();
+        }
+        zos.close();
+    }
+
 }
