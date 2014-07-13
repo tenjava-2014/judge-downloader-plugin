@@ -8,7 +8,12 @@ commands:
     description: Downloads a participant entry
     permission: 'tenjava.download'
     aliases: ['dl', 'tjdownload', 'judge']
+  disable:
+    usage: '/<command> <entry> - Eg: /<command> turt2live-t3'
+    description: Disables and removes a participant entry from your server
+    permission: 'tenjava.download'
+    aliases: ['remove', 'unjudge', 'killwithfire']
 permissions:
   'tenjava.download':
-    description: Allows people to download plugins
+    description: Allows people to download/disable plugins
     default: op

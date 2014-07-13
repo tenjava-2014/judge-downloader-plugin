@@ -8,6 +8,8 @@ import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -56,9 +58,33 @@ public class Downloader extends JavaPlugin {
             sender.sendMessage(ChatColor.GRAY + "Downloading. Server may lag for a moment.");
             attemptDownload(entry, sender);
             return true;
+        } else if (command.getName().equals("disable")) {
+            attemptDisable(entry, sender);
+            return true;
         }
 
         return false;
+    }
+
+    private void attemptDisable(String entry, CommandSender sender) {
+        File file = new File(getDataFolder().getParentFile(), entry + ".jar");
+        if (!file.exists()) {
+            sender.sendMessage(ChatColor.RED + "That plugin was not found.");
+            return;
+        }
+
+        PluginManager manager = getServer().getPluginManager();
+        Plugin plugin = manager.getPlugin(entry);
+        if (plugin != null) {
+            if (plugin.isEnabled()) manager.disablePlugin(plugin);
+        }
+
+        boolean deleted = file.delete();
+        if (!deleted) {
+            sender.sendMessage(ChatColor.YELLOW + "Plugin has been disabled but could not be removed.");
+        } else {
+            sender.sendMessage(ChatColor.GREEN + "Plugin removed!");
+        }
     }
 
     private void attemptDownload(String entry, CommandSender sender) {
@@ -131,7 +157,8 @@ public class Downloader extends JavaPlugin {
 
             // Now tell them to start 'er up
             sender.sendMessage(ChatColor.GREEN + entry + " has been downloaded to your server's plugin folder.");
-            sender.sendMessage(ChatColor.GRAY + "Type /reload to enable it. Don't forget about previous plugins!");
+            sender.sendMessage(ChatColor.GRAY + "Type /reload to enable it and /disable to remove old plugins.");
+            sender.sendMessage(ChatColor.GRAY + "Plugin Usage: https://github.com/tenjava/" + entry + "#usage");
         } catch (IOException e) {
             e.printStackTrace();
             sender.sendMessage(ChatColor.RED + "Something went wrong with the download. See the console for more information.");
