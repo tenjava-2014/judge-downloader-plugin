@@ -1,5 +1,8 @@
 package com.tenjava.downloader;
 
+import com.offbytwo.jenkins.JenkinsServer;
+import com.offbytwo.jenkins.model.Job;
+import com.offbytwo.jenkins.model.JobWithDetails;
 import com.sk89q.bukkit.util.CommandsManagerRegistration;
 import com.sk89q.minecraft.util.commands.CommandException;
 import com.sk89q.minecraft.util.commands.CommandPermissionsException;
@@ -8,11 +11,21 @@ import com.sk89q.minecraft.util.commands.CommandsManager;
 import com.sk89q.minecraft.util.commands.MissingNestedCommandException;
 import com.sk89q.minecraft.util.commands.WrappedCommandException;
 import com.tenjava.downloader.commands.DownloadCommand;
+import org.apache.commons.io.FileUtils;
+import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
+
+import java.io.File;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.util.Map;
 
 /**
  * @author MasterEjay
@@ -20,12 +33,18 @@ import org.bukkit.plugin.java.JavaPlugin;
 public class Downloader extends JavaPlugin {
 
 	public CommandsManager<CommandSender> commands;
-
+	public static JenkinsServer jenkinsServer;
 
 	@Override
 	public void onEnable(){
 		super.onEnable();
 		setupCommands();
+		try{
+			jenkinsServer = new JenkinsServer(new URI("http://ci.tenjava.com/"));
+		}catch(URISyntaxException e){
+			Bukkit.getLogger().severe(e.getMessage());
+			Bukkit.shutdown();
+		}
 	}
 
 	@Override
@@ -67,5 +86,43 @@ public class Downloader extends JavaPlugin {
 		}
 
 		return true;
+	}
+
+
+	public static void download(String name, String time, CommandSender sender){
+		Map<String,Job> jobs;
+		Job selectedJob = null;
+		try{
+			jobs = jenkinsServer.getJobs();
+			String jobName = name + "-" + time;
+
+			for (Job job : jobs.values()){
+				if (jobName.equalsIgnoreCase(job.getName())){
+					selectedJob = job;
+				}
+			}
+
+		}catch(IOException e){
+			Bukkit.getLogger().severe(e.getMessage());
+			Bukkit.shutdown();
+		}
+
+		if (selectedJob == null){
+			sender.sendMessage(ChatColor.RED + "That job could not be found on the CI repo.");
+			return;
+		}
+
+	   if (!Bukkit.getUpdateFolderFile().exists()){
+		   Bukkit.getUpdateFolderFile().mkdir();
+	   }
+		 sender.sendMessage(ChatColor.GOLD + "Downloading....");
+		try{
+			FileUtils.copyURLToFile(new URL(selectedJob.details().getLastSuccessfulBuild().getUrl()), new File(Bukkit.getUpdateFolderFile(), selectedJob.getName() + ".jar"));
+		}catch(IOException e){
+			Bukkit.getLogger().severe(e.getMessage());
+			Bukkit.shutdown();
+		}
+		sender.sendMessage(ChatColor.GREEN + "The file has been downloaded and placed in the update folder. Restart the server!");
+
 	}
 }
